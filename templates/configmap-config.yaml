@@ -1,0 +1,32 @@
+{{- include "redis.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "redis.configConfigMapName" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  # took and teaked from https://github.com/redis/redis/blob/8.6.2/redis.conf and tweaked
+  redis.conf: |
+    # listen to all interfaces
+    bind * -::*
+    # By default protected mode is enabled. You should disable it only if
+    # you are sure you want clients from other hosts to connect to Redis
+    # even if no authentication is configured.
+    protected-mode no
+    port {{ .Values.service.port }}
+    dir /data
+    {{- with .Values.redisConfig }}
+    {{ . | nindent 4 }}
+    {{- end }}
+
+  sentinel.conf: |
+    bind * -::*
+    protected-mode no
+    port {{ .Values.sentinel.port }}
+    dir /sentinel
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel down-after-milliseconds mymaster {{ .Values.sentinel.downAfterMilliseconds }}
+    sentinel failover-timeout mymaster {{ .Values.sentinel.failoverTimeout }}
+    sentinel parallel-syncs mymaster {{ .Values.sentinel.parallelSyncs }}

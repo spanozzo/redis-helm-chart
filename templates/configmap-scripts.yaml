@@ -1,0 +1,174 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "redis.scriptsConfigMapName" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  common.sh: |
+    # used by redis-start.sh, sentinel-start.sh, prestop.sh
+    set -eu
+
+    REDIS_NAME="{{ include "redis.nodeName" . }}"
+    HEADLESS_FQDN="{{ include "redis.headlessFQDN" . }}"
+    REPLICAS="{{ .Values.replicaCount }}"
+    REDIS_PORT="{{ .Values.service.port }}"
+    SENTINEL_PORT="{{ .Values.sentinel.port }}"
+    QUORUM="{{ .Values.sentinel.quorum }}"
+
+    MY_FQDN="${HOSTNAME}.${HEADLESS_FQDN}"
+
+    {{- if .Values.auth.enabled }}
+    REDIS_AUTH="-a ${REDIS_PASSWORD}"
+    SENTINEL_AUTH="-a ${REDIS_PASSWORD}"
+    {{- else }}
+    REDIS_AUTH=""
+    SENTINEL_AUTH=""
+    {{- end }}
+
+    # discover_master
+    # order:
+    #   1. ask every reachable sentinel
+    #   2. probe redis instances for role:master
+    #   3. fallback to redis instance 0
+    discover_master() {
+      i=""
+      peer=""
+      master=""
+      # check sentinels for redis master instance
+      for i in $(seq 0 $((${REPLICAS} - 1))); do
+        peer="${REDIS_NAME}-${i}.${HEADLESS_FQDN}"
+        master=$(redis-cli --no-auth-warning -h "${peer}" -p "${SENTINEL_PORT}" ${SENTINEL_AUTH} -t 2 \
+          sentinel get-master-addr-by-name mymaster 2>/dev/null \
+          | head -n1 || true)
+        if [ -n "${master}" ] && [ "${master}" != "Could not connect" ]; then
+          echo "${master}"
+          return 0
+        fi
+      done
+      # check directly redis instances for role:master
+      for i in $(seq 0 $((${REPLICAS} - 1))); do
+        peer="${REDIS_NAME}-${i}.${HEADLESS_FQDN}"
+        if redis-cli --no-auth-warning -h "${peer}" -p "${REDIS_PORT}" \
+           ${REDIS_AUTH} -t 2 \
+           info replication 2>/dev/null | tr -d '\r' | grep -q '^role:master$'; then
+          echo "${peer}"
+          return 0
+        fi
+      done
+      # failback to redis instance 0 as master (always when new release startup)
+      echo "${REDIS_NAME}-0.${HEADLESS_FQDN}"
+    }
+
+  redis-start.sh: |
+    #!/bin/sh
+    . /scripts/common.sh
+
+    CONF=/data/redis.conf
+    echo "redis-start: booting on ${MY_FQDN}"
+    {{- if .Values.auth.enabled }}
+    echo "redis-start: auth enabled"
+    {{- else }}
+    echo "redis-start: auth disabled"
+    {{- end }}
+
+    MASTER=$(discover_master)
+    echo "Discovered master: ${MASTER} - ${MY_FQDN}"
+
+    # check if this redis instance is master or a replica (if the latter set the replicaof param)
+    if [ "${MASTER}" != "${MY_FQDN}" ]; then
+      echo "redis-start: starting as replica of ${MASTER}:${REDIS_PORT}"
+      echo "replicaof ${MASTER} ${REDIS_PORT}" >> "${CONF}"
+    else
+      echo "redis-start: starting as master"
+    fi
+
+    {{- if .Values.auth.enabled }}
+    echo "requirepass ${REDIS_PASSWORD}" >> "${CONF}"
+    echo "masterauth ${REDIS_PASSWORD}" >> "${CONF}"
+    {{- end }}
+
+    # announce ip and port
+    echo "replica-announce-ip ${MY_FQDN}" >> "${CONF}"
+    echo "replica-announce-port ${REDIS_PORT}" >> "${CONF}"
+
+    echo "redis-start: launching redis-server with runtime config ${CONF}"
+    exec redis-server "${CONF}"
+
+  sentinel-start.sh: |
+    #!/bin/sh
+    . /scripts/common.sh
+
+    CONF=/sentinel/sentinel.conf
+    echo "sentinel-start: booting on ${MY_FQDN}"
+    {{- if .Values.auth.enabled }}
+    echo "sentinel-start: auth enabled"
+    {{- else }}
+    echo "sentinel-start: auth disabled"
+    {{- end }}
+
+    MASTER=$(discover_master)
+    echo "Sentinel bootstrapping with master: ${MASTER}"
+
+    # runtime params (depend on discovered master + this pod's FQDN)
+    echo "sentinel monitor mymaster ${MASTER} ${REDIS_PORT} ${QUORUM}" >> "${CONF}"
+    echo "sentinel announce-ip ${MY_FQDN}" >> "${CONF}"
+    echo "sentinel announce-port ${SENTINEL_PORT}" >> "${CONF}"
+
+    {{- if .Values.auth.enabled }}
+    echo "sentinel auth-pass mymaster ${REDIS_PASSWORD}" >> "${CONF}"
+    echo "requirepass ${REDIS_PASSWORD}" >> "${CONF}"
+    {{- end }}
+
+    echo "sentinel-start: launching sentinel with runtime config ${CONF}"
+    exec redis-server "${CONF}" --sentinel
+
+  redis-prestop.sh: |
+    #!/bin/sh
+    # graceful shutdown hook
+    # when this pod's redis is master, ask sentinel to fail over so clients are not left hanging on a dead master
+    . /scripts/common.sh
+
+    # get this instance role or ""
+    ROLE=$(redis-cli --no-auth-warning -h 127.0.0.1 -p "${REDIS_PORT}" \
+      ${REDIS_AUTH} role 2>/dev/null | head -n1 || echo "")
+
+    # if it's a master instance, trigger a failover
+    if [ "${ROLE}" = "master" ]; then
+      echo "preStop: local redis is master, triggering sentinel failover"
+      redis-cli --no-auth-warning -h 127.0.0.1 -p "${SENTINEL_PORT}" \
+        ${SENTINEL_AUTH} sentinel failover mymaster >/dev/null 2>&1 || true
+
+      # wait max 20s for sentinel to elect a new master.
+      for _ in $(seq 1 20); do
+        NEW=$(redis-cli --no-auth-warning -h 127.0.0.1 -p "${SENTINEL_PORT}" \
+          ${SENTINEL_AUTH} sentinel get-master-addr-by-name mymaster \
+          2>/dev/null | head -n1 || echo "")
+        if [ -n "${NEW}" ] && [ "${NEW}" != "${MY_FQDN}" ]; then
+          echo "preStop: failover complete, new master is ${NEW}"
+          break
+        fi
+        sleep 1
+      done
+    else
+      echo "preStop: local redis is ${ROLE:-unknown}, no failover needed"
+    fi
+    exit 0
+
+  sentinel-prestop.sh: |
+    #!/bin/sh
+    # give the redis container's preStop time to failover before this sentinel die
+    . /scripts/common.sh
+
+    # check (wait max 20s) if this redis instance is replica or master
+    for _ in $(seq 1 20); do
+      ROLE=$(redis-cli --no-auth-warning -h 127.0.0.1 -p "${REDIS_PORT}" \
+        ${REDIS_AUTH} role 2>/dev/null | head -n1 || echo "")
+      if [ "${ROLE}" != "master" ]; then
+        echo "preStop(sentinel): local redis is ${ROLE:-gone}, safe to exit"
+        break
+      fi
+      echo "preStop(sentinel): waiting for local redis to stop being master"
+      sleep 1
+    done
+    exit 0
