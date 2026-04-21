@@ -1,0 +1,99 @@
+## Number of redis+sentinel pods. Must be odd (>=3) for sentinel quorum
+replicaCount: 3
+
+image:
+  repository: redis
+  tag: "8.6.2"
+  pullPolicy: IfNotPresent
+
+## Optional auth
+auth:
+  enabled: false
+  existingSecret: ""
+  existingSecretPasswordKey: "redis-password"
+
+service:
+  port: 6379
+
+sentinel:
+  port: 26379
+  quorum: 2
+  downAfterMilliseconds: 60000
+  failoverTimeout: 180000
+  parallelSyncs: 1
+
+## Raw redis.conf directives appended to the base config
+redisConfig: |-
+  # Enable AOF https://redis.io/topics/persistence#append-only-file
+  appendonly yes
+  # Disable RDB persistence, AOF persistence already enabled.
+  save ""
+
+persistence:
+  enabled: true
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+pdb:
+  minAvailable: 2
+
+metrics:
+  enabled: false
+  image:
+    repository: oliver006/redis_exporter
+    tag: "v1.82.0"
+    pullPolicy: IfNotPresent
+  port: 9121
+  serviceMonitor:
+    interval: "30s"
+    scrapeTimeout: ""
+    labels: {}
+  extraEnvVars: []
+
+# TODO: set reasonable values. Init, sentinel, metrics should works as default without need to change
+# Bitnami sets also some resourcesPresets {none, nano, micro, small, medium, large, xlarge, 2xlarge}, not set in v1
+resources:
+  redis: {}
+  sentinel: {}
+  metrics: {}
+  init: {}
+
+## Chart already define basic topologySpreadConstraints, this are an addition
+affinity: {}
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints: []
+
+probes:
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 5
+
+terminationGracePeriodSeconds: 30
+
+podAnnotations: {}
+podLabels: {}
+
+securityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsGroup: 1001
+  runAsNonRoot: true
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+commonLabels: {}

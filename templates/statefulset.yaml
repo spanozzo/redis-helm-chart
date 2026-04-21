@@ -103,9 +103,13 @@ spec:
           lifecycle:
             preStop:
               exec:
+                {{- /*
+                >/proc/1/fd/1 2>/proc/1/fd/2 otherwise exec hook logs aren't redirected to container logs
+                */}}
                 command:
                   - /bin/sh
-                  - /scripts/redis-prestop.sh
+                  - -c
+                  - /scripts/redis-prestop.sh >/proc/1/fd/1 2>/proc/1/fd/2
           livenessProbe:
             exec:
               command:
@@ -173,7 +177,8 @@ spec:
               exec:
                 command:
                   - /bin/sh
-                  - /scripts/sentinel-prestop.sh
+                  - -c
+                  - /scripts/sentinel-prestop.sh >/proc/1/fd/1 2>/proc/1/fd/2
           livenessProbe:
             exec:
               command:

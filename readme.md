@@ -1,3 +1,6 @@
+# Redis sentinel helm chart
+
+## Simple redis sentinel (no cluster or no-sentinel options) helm chart that uses official redis image
 - architecture: replication only
 - Redis Sentinel enabled by default
 - one StatefulSet with 3 pods, each pod running:
@@ -58,3 +61,6 @@ prestop scripts (`redis-prestop.sh`, `sentinel-prestop.sh`) should:
 - graceful shutdown sentinel instances (sentinel-prestop):
   - the local redis instance may also be stopping -> poll until local redis is no longer master (this avoids the local sentinel disappearing too early and delaying quorum for a new master election)
   - log what it is waiting for and when it is safe to stop
+
+## TODO
+- set default resources values

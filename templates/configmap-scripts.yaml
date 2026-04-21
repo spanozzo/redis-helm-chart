@@ -26,12 +26,12 @@ data:
     SENTINEL_AUTH=""
     {{- end }}
 
-    # discover_master
-    # order:
+    # discover master order:
     #   1. ask every reachable sentinel
     #   2. probe redis instances for role:master
     #   3. fallback to redis instance 0
     discover_master() {
+      echo "starting discover_master process..." >&2
       i=""
       peer=""
       master=""
@@ -73,7 +73,7 @@ data:
     {{- end }}
 
     MASTER=$(discover_master)
-    echo "Discovered master: ${MASTER} - ${MY_FQDN}"
+    echo "Discovered master: ${MASTER}"
 
     # check if this redis instance is master or a replica (if the latter set the replicaof param)
     if [ "${MASTER}" != "${MY_FQDN}" ]; then
@@ -88,7 +88,7 @@ data:
     echo "masterauth ${REDIS_PASSWORD}" >> "${CONF}"
     {{- end }}
 
-    # announce ip and port
+    # set announce params for ip and port
     echo "replica-announce-ip ${MY_FQDN}" >> "${CONF}"
     echo "replica-announce-port ${REDIS_PORT}" >> "${CONF}"
 
