@@ -281,3 +281,6 @@ spec:
         storageClassName: {{ . }}
         {{- end }}
   {{- end }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Delete
+    whenScaled: Retain
